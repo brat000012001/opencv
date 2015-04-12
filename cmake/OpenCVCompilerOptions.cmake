@@ -64,8 +64,8 @@ if(CMAKE_COMPILER_IS_GNUCXX)
   add_extra_compiler_option(-W)
   add_extra_compiler_option(-Wall)
   add_extra_compiler_option(-Werror=return-type)
-  # peter: http://code.opencv.org/issues/4107
-  # peter: http://stackoverflow.com/questions/28050219/missing-virtual-destructor-in-base-interface-class/28050492#28050492
+  # See http://code.opencv.org/issues/4107
+  # and http://stackoverflow.com/questions/28050219/missing-virtual-destructor-in-base-interface-class/28050492#28050492
   #add_extra_compiler_option(-Werror=non-virtual-dtor)
   add_extra_compiler_option(-Werror=address)
   add_extra_compiler_option(-Werror=sequence-point)
