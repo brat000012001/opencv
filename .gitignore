@@ -8,3 +8,8 @@
 Thumbs.db
 tags
 tegra/
+*.cmake
+*.tmp
+CMakeCache.txt
+*.a
+Makefile

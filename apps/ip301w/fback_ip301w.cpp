@@ -1,10 +1,13 @@
 #include "opencv2/video/tracking.hpp"
-#include "opencv2/imgproc/imgproc.hpp"
-#include "opencv2/highgui/highgui.hpp"
+#include "opencv2/imgproc.hpp"
+#include "opencv2/highgui.hpp"
 
 #include <iostream>
 #include <ctime>
 #include <sys/time.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <direct.h>
 
 using namespace cv;
 using namespace std;
@@ -15,7 +18,7 @@ static void help()
             "\nThis program demonstrates dense optical flow algorithm by Gunnar Farneback\n"
             "Mainly the function: calcOpticalFlowFarneback()\n"
             "Call:\n"
-            "./fback\n"
+            "./fback_ip301w\n"
             "This reads from video camera 0\n" << endl;
 }
 static void drawOptFlowMap(const Mat& flow, Mat& cflowmap, int step,
@@ -169,14 +172,14 @@ bool EndOfMotionDetectionState::IsCapturing() const
 {
     return false;
 }
-void EndOfMotionDetectionState::OnEnterCapture(MotionDetector &motion)
+void EndOfMotionDetectionState::OnEnterCapture(MotionDetector &/*motion*/)
 {
 }
-void EndOfMotionDetectionState::OnFrameCaptured(MotionDetector &motionDetector, const Mat & nextFrame)
+void EndOfMotionDetectionState::OnFrameCaptured(MotionDetector &/*motionDetector*/, const Mat & /*nextFrame*/)
 {
 
 }
-void EndOfMotionDetectionState::OnLeaveCapture(MotionDetector &motion)
+void EndOfMotionDetectionState::OnLeaveCapture(MotionDetector &/*motion*/)
 {
 
 }
@@ -192,7 +195,7 @@ bool NoMotionDetectedState::IsCapturing() const
     return true;
 }
 
-void NoMotionDetectedState::OnEnterCapture(MotionDetector &motion)
+void NoMotionDetectedState::OnEnterCapture(MotionDetector &/*motion*/)
 {
     Mat empty;
     m_prevgray = empty;
@@ -239,7 +242,7 @@ void NoMotionDetectedState::OnFrameCaptured(MotionDetector &motionDetector, cons
         motionDetector.setState(&MotionDetectedState::defaultInstance());
     }
 }
-void NoMotionDetectedState::OnLeaveCapture(MotionDetector &motion)
+void NoMotionDetectedState::OnLeaveCapture(MotionDetector &/*motion*/)
 {
 }
 NoMotionDetectedState &NoMotionDetectedState::defaultInstance()
@@ -267,7 +270,7 @@ void MotionDetectedState::OnEnterCapture(MotionDetector &motion)
         m_writer = 0;
     }
 
-    printf("Motion is detected, begin capturing...\n");
+    printf("Motion is detected: Begin capturing...\n");
 
     gettimeofday(&m_start, 0);
 
@@ -280,6 +283,9 @@ void MotionDetectedState::OnEnterCapture(MotionDetector &motion)
     path += "\\";
     path += ltoa(m_start.tv_sec, buf, 10);
     path += ".avi";
+
+    printf("Motion is detected: Recording live video to \"%s\"...\n", path.c_str());
+ 
     m_writer = new VideoWriter(path.c_str(), ex, 10, Size(frame_width,frame_height),true);
 
     gettimeofday(&m_start, 0);
@@ -313,9 +319,9 @@ void MotionDetectedState::OnFrameCaptured(MotionDetector &motionDetector, const 
         waitKey(30);
      }
 }
-void MotionDetectedState::OnLeaveCapture(MotionDetector &motion)
+void MotionDetectedState::OnLeaveCapture(MotionDetector &/*motion*/)
 {
-    printf("Motion is detected, end capturing...\n");
+    printf("Motion is detected: End capturing...\n");
     //m_writer->release();
     delete m_writer;
     m_writer = 0;
@@ -336,7 +342,7 @@ bool DelayMotionDetectionState::IsCapturing() const
 {
     return true;
 }
-void DelayMotionDetectionState::OnEnterCapture(MotionDetector &motion)
+void DelayMotionDetectionState::OnEnterCapture(MotionDetector &/*motion*/)
 {
     gettimeofday(&m_start, 0);
 }
@@ -351,11 +357,11 @@ void DelayMotionDetectionState::OnFrameCaptured(MotionDetector &motionDetector, 
     {
         sprintf(buf, "%d seconds remaining...", remaining);
 
-        Mat gray;
-        cvtColor(nextFrame, gray, COLOR_BGR2GRAY);
-        cv::putText(gray,  buf, Point(10,80), 2, 0.5, Scalar(0,0,255), 2.5, cv::LINE_AA);
+        //Mat gray;
+        //cvtColor(nextFrame, gray, COLOR_BGR2GRAY);
+        cv::putText(nextFrame,  buf, Point(10,80), 2, 0.5, Scalar(0,0,255), 2.5, cv::LINE_AA);
 
-        imshow("flow", gray);
+        imshow("flow", nextFrame);
     }
 
     if (current.tv_sec - m_start.tv_sec > 5)
@@ -364,9 +370,8 @@ void DelayMotionDetectionState::OnFrameCaptured(MotionDetector &motionDetector, 
     }
     waitKey(30);
 }
-void DelayMotionDetectionState::OnLeaveCapture(MotionDetector &motion)
+void DelayMotionDetectionState::OnLeaveCapture(MotionDetector &/*motion*/)
 {
-
 }
 DelayMotionDetectionState &DelayMotionDetectionState::defaultInstance()
 {
@@ -378,7 +383,9 @@ int main(int argc, char** argv)
 {
     int camid = 0;
     VideoCapture cap;
-    char *outputdir = "data";
+    const char *outputdir = "data";
+    struct stat info;
+
     if (argc > 1)
     {
         camid = atoi(argv[1]);
@@ -391,6 +398,20 @@ int main(int argc, char** argv)
     {
         help();
         return -1;
+    }
+
+    if (stat(outputdir, &info) != 0)
+    {
+	if (_mkdir(outputdir) != 0)
+	{
+		printf("\"%s\" output directory does not exist and/or cannot be created.\n", outputdir);
+		help();
+	}
+    }
+    else if ((info.st_mode & _S_IFDIR) == 0) 
+    {
+	printf("\"%s\" is not a directory.\n", outputdir);
+	help();
     }
 
     MotionDetector detector(&cap, outputdir);
