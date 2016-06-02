@@ -1,6 +1,6 @@
 #if defined(_MSC_VER) && (_MSC_VER >= 1800)
 // eliminating duplicated round() declaration
-#define HAVE_ROUND
+#define HAVE_ROUND 1
 #endif
 
 #include <Python.h>
@@ -10,6 +10,7 @@
 #include <numpy/ndarrayobject.h>
 
 #include "pyopencv_generated_include.h"
+#include "opencv2/core/types_c.h"
 
 #include "opencv2/opencv_modules.hpp"
 
@@ -82,9 +83,6 @@ catch (const cv::Exception &e) \
 }
 
 using namespace cv;
-using cv::flann::IndexParams;
-using cv::flann::SearchParams;
-using cv::softcascade::ChannelFeatureBuilder;
 
 typedef std::vector<uchar> vector_uchar;
 typedef std::vector<char> vector_char;
@@ -93,12 +91,14 @@ typedef std::vector<float> vector_float;
 typedef std::vector<double> vector_double;
 typedef std::vector<Point> vector_Point;
 typedef std::vector<Point2f> vector_Point2f;
+typedef std::vector<Point3f> vector_Point3f;
 typedef std::vector<Vec2f> vector_Vec2f;
 typedef std::vector<Vec3f> vector_Vec3f;
 typedef std::vector<Vec4f> vector_Vec4f;
 typedef std::vector<Vec6f> vector_Vec6f;
 typedef std::vector<Vec4i> vector_Vec4i;
 typedef std::vector<Rect> vector_Rect;
+typedef std::vector<Rect2d> vector_Rect2d;
 typedef std::vector<KeyPoint> vector_KeyPoint;
 typedef std::vector<Mat> vector_Mat;
 typedef std::vector<DMatch> vector_DMatch;
@@ -111,13 +111,18 @@ typedef std::vector<std::vector<Point2f> > vector_vector_Point2f;
 typedef std::vector<std::vector<Point3f> > vector_vector_Point3f;
 typedef std::vector<std::vector<DMatch> > vector_vector_DMatch;
 
-typedef cv::softcascade::ChannelFeatureBuilder softcascade_ChannelFeatureBuilder;
-
+#ifdef HAVE_OPENCV_FEATURES2D
 typedef SimpleBlobDetector::Params SimpleBlobDetector_Params;
+#endif
 
+#ifdef HAVE_OPENCV_FLANN
 typedef cvflann::flann_distance_t cvflann_flann_distance_t;
 typedef cvflann::flann_algorithm_t cvflann_flann_algorithm_t;
+#endif
 
+#ifdef HAVE_OPENCV_STITCHING
+typedef Stitcher::Status Status;
+#endif
 
 static PyObject* failmsgp(const char *fmt, ...)
 {
@@ -187,9 +192,13 @@ public:
 
     void deallocate(UMatData* u) const
     {
-        if(u)
+        if(!u)
+            return;
+        PyEnsureGIL gil;
+        CV_Assert(u->urefcount >= 0);
+        CV_Assert(u->refcount >= 0);
+        if(u->refcount == 0)
         {
-            PyEnsureGIL gil;
             PyObject* o = (PyObject*)u->userdata;
             Py_XDECREF(o);
             delete u;
@@ -223,7 +232,7 @@ static bool pyopencv_to(PyObject* o, Mat& m, const ArgInfo info)
 
     if( PyInt_Check(o) )
     {
-        double v[] = {PyInt_AsLong((PyObject*)o), 0., 0., 0.};
+        double v[] = {static_cast<double>(PyInt_AsLong((PyObject*)o)), 0., 0., 0.};
         m = Mat(4, 1, CV_64F, v).clone();
         return true;
     }
@@ -275,7 +284,7 @@ static bool pyopencv_to(PyObject* o, Mat& m, const ArgInfo info)
 
     if( type < 0 )
     {
-        if( typenum == NPY_INT64 || typenum == NPY_UINT64 || type == NPY_LONG )
+        if( typenum == NPY_INT64 || typenum == NPY_UINT64 || typenum == NPY_LONG )
         {
             needcopy = needcast = true;
             new_typenum = NPY_INT;
@@ -312,8 +321,9 @@ static bool pyopencv_to(PyObject* o, Mat& m, const ArgInfo info)
         //  a) multi-dimensional (ndims > 2) arrays, as well as simpler 1- and 2-dimensional cases
         //  b) transposed arrays, where _strides[] elements go in non-descending order
         //  c) flipped arrays, where some of _strides[] elements are negative
-        if( (i == ndims-1 && (size_t)_strides[i] != elemsize) ||
-            (i < ndims-1 && _strides[i] < _strides[i+1]) )
+        // the _sizes[i] > 1 is needed to avoid spurious copies when NPY_RELAXED_STRIDES is set
+        if( (i == ndims-1 && _sizes[i] > 1 && (size_t)_strides[i] != elemsize) ||
+            (i < ndims-1 && _sizes[i] > 1 && _strides[i] < _strides[i+1]) )
             needcopy = true;
     }
 
@@ -340,10 +350,21 @@ static bool pyopencv_to(PyObject* o, Mat& m, const ArgInfo info)
         _strides = PyArray_STRIDES(oarr);
     }
 
-    for(int i = 0; i < ndims; i++)
+    // Normalize strides in case NPY_RELAXED_STRIDES is set
+    size_t default_step = elemsize;
+    for ( int i = ndims - 1; i >= 0; --i )
     {
         size[i] = (int)_sizes[i];
-        step[i] = (size_t)_strides[i];
+        if ( size[i] > 1 )
+        {
+            step[i] = (size_t)_strides[i];
+            default_step = step[i] * size[i];
+        }
+        else
+        {
+            step[i] = default_step;
+            default_step *= size[i];
+        }
     }
 
     // handle degenerate case
@@ -376,6 +397,12 @@ static bool pyopencv_to(PyObject* o, Mat& m, const ArgInfo info)
     m.allocator = &g_numpyAllocator;
 
     return true;
+}
+
+template<>
+bool pyopencv_to(PyObject* o, Mat& m, const char* name)
+{
+    return pyopencv_to(o, m, ArgInfo(name, 0));
 }
 
 template<>
@@ -442,6 +469,14 @@ PyObject* pyopencv_from(const bool& value)
     return PyBool_FromLong(value);
 }
 
+#ifdef HAVE_OPENCV_STITCHING
+template<>
+PyObject* pyopencv_from(const Status& value)
+{
+    return PyInt_FromLong(value);
+}
+#endif
+
 template<>
 bool pyopencv_to(PyObject* obj, bool& value, const char* name)
 {
@@ -477,6 +512,7 @@ PyObject* pyopencv_from(const int& value)
     return PyInt_FromLong(value);
 }
 
+#ifdef HAVE_OPENCV_FLANN
 template<>
 PyObject* pyopencv_from(const cvflann_flann_algorithm_t& value)
 {
@@ -488,6 +524,7 @@ PyObject* pyopencv_from(const cvflann_flann_distance_t& value)
 {
     return PyInt_FromLong(int(value));
 }
+#endif
 
 template<>
 bool pyopencv_to(PyObject* obj, int& value, const char* name)
@@ -615,6 +652,21 @@ PyObject* pyopencv_from(const Rect& r)
 }
 
 template<>
+bool pyopencv_to(PyObject* obj, Rect2d& r, const char* name)
+{
+    (void)name;
+    if(!obj || obj == Py_None)
+        return true;
+    return PyArg_ParseTuple(obj, "dddd", &r.x, &r.y, &r.width, &r.height) > 0;
+}
+
+template<>
+PyObject* pyopencv_from(const Rect2d& r)
+{
+    return Py_BuildValue("(dddd)", r.x, r.y, r.width, r.height);
+}
+
+template<>
 bool pyopencv_to(PyObject* obj, Range& r, const char* name)
 {
     (void)name;
@@ -682,6 +734,23 @@ bool pyopencv_to(PyObject* obj, Point2d& p, const char* name)
     return PyArg_ParseTuple(obj, "dd", &p.x, &p.y) > 0;
 }
 
+template<>
+bool pyopencv_to(PyObject* obj, Point3f& p, const char* name)
+{
+    (void)name;
+    if(!obj || obj == Py_None)
+        return true;
+    return PyArg_ParseTuple(obj, "fff", &p.x, &p.y, &p.z) > 0;
+}
+
+template<>
+bool pyopencv_to(PyObject* obj, Point3d& p, const char* name)
+{
+    (void)name;
+    if(!obj || obj == Py_None)
+        return true;
+    return PyArg_ParseTuple(obj, "ddd", &p.x, &p.y, &p.z) > 0;
+}
 
 template<>
 PyObject* pyopencv_from(const Point& p)
@@ -693,6 +762,12 @@ template<>
 PyObject* pyopencv_from(const Point2f& p)
 {
     return Py_BuildValue("(dd)", p.x, p.y);
+}
+
+template<>
+PyObject* pyopencv_from(const Point3f& p)
+{
+    return Py_BuildValue("(ddd)", p.x, p.y, p.z);
 }
 
 template<>
@@ -720,6 +795,12 @@ template<>
 PyObject* pyopencv_from(const Point2d& p)
 {
     return Py_BuildValue("(dd)", p.x, p.y);
+}
+
+template<>
+PyObject* pyopencv_from(const Point3d& p)
+{
+    return Py_BuildValue("(ddd)", p.x, p.y, p.y);
 }
 
 template<typename _Tp> struct pyopencvVecConverter
@@ -886,6 +967,24 @@ template<typename _Tp> static inline PyObject* pyopencv_from_generic_vec(const s
     return seq;
 }
 
+template<>
+PyObject* pyopencv_from(const std::pair<int, double>& src)
+{
+    return Py_BuildValue("(id)", src.first, src.second);
+}
+
+template<typename _Tp, typename _Tr> struct pyopencvVecConverter<std::pair<_Tp, _Tr> >
+{
+    static bool to(PyObject* obj, std::vector<std::pair<_Tp, _Tr> >& value, const ArgInfo info)
+    {
+        return pyopencv_to_generic_vec(obj, value, info);
+    }
+
+    static PyObject* from(const std::vector<std::pair<_Tp, _Tr> >& value)
+    {
+        return pyopencv_from_generic_vec(value);
+    }
+};
 
 template<typename _Tp> struct pyopencvVecConverter<std::vector<_Tp> >
 {
@@ -995,23 +1094,23 @@ PyObject* pyopencv_from(const Moments& m)
                          "nu30", m.nu30, "nu21", m.nu21, "nu12", m.nu12, "nu03", m.nu03);
 }
 
+#ifdef HAVE_OPENCV_FLANN
 template<>
 bool pyopencv_to(PyObject *o, cv::flann::IndexParams& p, const char *name)
 {
     (void)name;
-    bool ok = false;
-    PyObject* keys = PyObject_CallMethod(o,(char*)"keys",0);
-    PyObject* values = PyObject_CallMethod(o,(char*)"values",0);
+    bool ok = true;
+    PyObject* key = NULL;
+    PyObject* item = NULL;
+    Py_ssize_t pos = 0;
 
-    if( keys && values )
-    {
-        int i, n = (int)PyList_GET_SIZE(keys);
-        for( i = 0; i < n; i++ )
-        {
-            PyObject* key = PyList_GET_ITEM(keys, i);
-            PyObject* item = PyList_GET_ITEM(values, i);
-            if( !PyString_Check(key) )
+    if(PyDict_Check(o)) {
+        while(PyDict_Next(o, &pos, &key, &item)) {
+            if( !PyString_Check(key) ) {
+                ok = false;
                 break;
+            }
+
             String k = PyString_AsString(key);
             if( PyString_Check(item) )
             {
@@ -1034,14 +1133,14 @@ bool pyopencv_to(PyObject *o, cv::flann::IndexParams& p, const char *name)
                 p.setDouble(k, value);
             }
             else
+            {
+                ok = false;
                 break;
+            }
         }
-        ok = i == n && !PyErr_Occurred();
     }
 
-    Py_XDECREF(keys);
-    Py_XDECREF(values);
-    return ok;
+    return ok && !PyErr_Occurred();
 }
 
 template<>
@@ -1049,6 +1148,7 @@ bool pyopencv_to(PyObject* obj, cv::flann::SearchParams & value, const char * na
 {
     return pyopencv_to<cv::flann::IndexParams>(obj, value, name);
 }
+#endif
 
 template <typename T>
 bool pyopencv_to(PyObject *o, Ptr<T>& p, const char *name)
@@ -1057,6 +1157,7 @@ bool pyopencv_to(PyObject *o, Ptr<T>& p, const char *name)
     return pyopencv_to(o, *p, name);
 }
 
+#ifdef HAVE_OPENCV_FLANN
 template<>
 bool pyopencv_to(PyObject *o, cvflann::flann_distance_t& dist, const char *name)
 {
@@ -1065,6 +1166,7 @@ bool pyopencv_to(PyObject *o, cvflann::flann_distance_t& dist, const char *name)
     dist = (cvflann::flann_distance_t)d;
     return ok;
 }
+#endif
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1093,14 +1195,6 @@ bool pyopencv_to(PyObject* obj, CvSlice& r, const char* name)
     return PyArg_ParseTuple(obj, "ii", &r.start_index, &r.end_index) > 0;
 }
 
-template<>
-PyObject* pyopencv_from(CvDTreeNode* const & node)
-{
-    double value = node->value;
-    int ivalue = cvRound(value);
-    return value == ivalue ? PyInt_FromLong(ivalue) : PyFloat_FromDouble(value);
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 static void OnMouse(int event, int x, int y, int flags, void* param)
@@ -1120,6 +1214,7 @@ static void OnMouse(int event, int x, int y, int flags, void* param)
     PyGILState_Release(gstate);
 }
 
+#ifdef HAVE_OPENCV_HIGHGUI
 static PyObject *pycvSetMouseCallback(PyObject*, PyObject *args, PyObject *kw)
 {
     const char *keywords[] = { "window_name", "on_mouse", "param", NULL };
@@ -1139,6 +1234,7 @@ static PyObject *pycvSetMouseCallback(PyObject*, PyObject *args, PyObject *kw)
     ERRWRAP2(setMouseCallback(name, OnMouse, Py_BuildValue("OO", on_mouse, param)));
     Py_RETURN_NONE;
 }
+#endif
 
 static void OnChange(int pos, void *param)
 {
@@ -1154,6 +1250,7 @@ static void OnChange(int pos, void *param)
     PyGILState_Release(gstate);
 }
 
+#ifdef HAVE_OPENCV_HIGHGUI
 static PyObject *pycvCreateTrackbar(PyObject*, PyObject *args)
 {
     PyObject *on_change;
@@ -1171,6 +1268,7 @@ static PyObject *pycvCreateTrackbar(PyObject*, PyObject *args)
     ERRWRAP2(createTrackbar(trackbar_name, window_name, value, count, OnChange, Py_BuildValue("OO", on_change, Py_None)));
     Py_RETURN_NONE;
 }
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////////////
 
@@ -1199,16 +1297,65 @@ static int convert_to_char(PyObject *o, char *dst, const char *name = "no_name")
 #include "pyopencv_generated_types.h"
 #include "pyopencv_generated_funcs.h"
 
-static PyMethodDef methods[] = {
-
-#include "pyopencv_generated_func_tab.h"
+static PyMethodDef special_methods[] = {
+#ifdef HAVE_OPENCV_HIGHGUI
   {"createTrackbar", pycvCreateTrackbar, METH_VARARGS, "createTrackbar(trackbarName, windowName, value, count, onChange) -> None"},
   {"setMouseCallback", (PyCFunction)pycvSetMouseCallback, METH_VARARGS | METH_KEYWORDS, "setMouseCallback(windowName, onMouse [, param]) -> None"},
+#endif
   {NULL, NULL},
 };
 
 /************************************************************************/
 /* Module init */
+
+struct ConstDef
+{
+    const char * name;
+    long val;
+};
+
+static void init_submodule(PyObject * root, const char * name, PyMethodDef * methods, ConstDef * consts)
+{
+  // traverse and create nested submodules
+  std::string s = name;
+  size_t i = s.find('.');
+  while (i < s.length() && i != std::string::npos)
+  {
+    size_t j = s.find('.', i);
+    if (j == std::string::npos)
+        j = s.length();
+    std::string short_name = s.substr(i, j-i);
+    std::string full_name = s.substr(0, j);
+    i = j+1;
+
+    PyObject * d = PyModule_GetDict(root);
+    PyObject * submod = PyDict_GetItemString(d, short_name.c_str());
+    if (submod == NULL)
+    {
+        submod = PyImport_AddModule(full_name.c_str());
+        PyDict_SetItemString(d, short_name.c_str(), submod);
+    }
+
+    if (short_name != "")
+        root = submod;
+  }
+
+  // populate module's dict
+  PyObject * d = PyModule_GetDict(root);
+  for (PyMethodDef * m = methods; m->ml_name != NULL; ++m)
+  {
+    PyObject * method_obj = PyCFunction_NewEx(m, NULL, NULL);
+    PyDict_SetItemString(d, m->ml_name, method_obj);
+    Py_DECREF(method_obj);
+  }
+  for (ConstDef * c = consts; c->name != NULL; ++c)
+  {
+    PyDict_SetItemString(d, c->name, PyInt_FromLong(c->val));
+  }
+
+}
+
+#include "pyopencv_generated_ns_reg.h"
 
 static int to_ok(PyTypeObject *to)
 {
@@ -1228,7 +1375,7 @@ static struct PyModuleDef cv2_moduledef =
     "Python wrapper for OpenCV.",
     -1,     /* size of per-interpreter state of the module,
                or -1 if the module keeps state in global variables. */
-    methods
+    special_methods
 };
 
 PyObject* PyInit_cv2()
@@ -1245,8 +1392,10 @@ void initcv2()
 #if PY_MAJOR_VERSION >= 3
   PyObject* m = PyModule_Create(&cv2_moduledef);
 #else
-  PyObject* m = Py_InitModule(MODULESTR, methods);
+  PyObject* m = Py_InitModule(MODULESTR, special_methods);
 #endif
+  init_submodules(m); // from "pyopencv_generated_ns_reg.h"
+
   PyObject* d = PyModule_GetDict(m);
 
   PyDict_SetItemString(d, "__version__", PyString_FromString(CV_VERSION));
@@ -1294,7 +1443,6 @@ void initcv2()
   PUBLISH(CV_64FC3);
   PUBLISH(CV_64FC4);
 
-#include "pyopencv_generated_const_reg.h"
 #if PY_MAJOR_VERSION >= 3
     return m;
 #endif

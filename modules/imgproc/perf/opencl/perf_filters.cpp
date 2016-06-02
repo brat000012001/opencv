@@ -44,7 +44,7 @@
 //
 //M*/
 
-#include "perf_precomp.hpp"
+#include "../perf_precomp.hpp"
 #include "opencv2/ts/ocl_perf.hpp"
 
 #ifdef HAVE_OPENCL
@@ -272,7 +272,8 @@ OCL_PERF_TEST_P(Filter2DFixture, Filter2D,
 
     checkDeviceMaxMemoryAllocSize(srcSize, type);
 
-    UMat src(srcSize, type), dst(srcSize, type), kernel(ksize, ksize, CV_32SC1);
+    UMat src(srcSize, type), dst(srcSize, type);
+    Mat kernel(ksize, ksize, CV_32SC1);
     declare.in(src, WARMUP_RNG).in(kernel).out(dst);
     randu(kernel, -3.0, 3.0);
 
