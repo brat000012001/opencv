@@ -138,7 +138,7 @@ public:
         Mat frame;
         namedWindow("flow", 1);
 
-        setState(&NoMotionDetectedState::defaultInstance());
+        setState(&DelayMotionDetectionState::defaultInstance());
         while(m_state->IsCapturing())
         {
             *m_cap >> frame;
@@ -277,7 +277,7 @@ void MotionDetectedState::OnEnterCapture(MotionDetector &motion)
     int frame_width  =   motion.getCap()->get(CAP_PROP_FRAME_WIDTH);
     int frame_height =   motion.getCap()->get(CAP_PROP_FRAME_HEIGHT);
 
-    int ex = static_cast<int>(VideoWriter::fourcc('M','J','P','G'));
+    int ex = static_cast<int>(VideoWriter::fourcc('X','V','I','D'));
 
     std::string path = motion.getOutputDir();
     path += "\\";
@@ -298,16 +298,19 @@ void MotionDetectedState::OnFrameCaptured(MotionDetector &motionDetector, const 
         timeval current;
         gettimeofday(&current, 0);
 
+        // Write the current frame
         m_writer->write(nextFrame);
 
         int remaining = 10 - (current.tv_sec - m_start.tv_sec);
         if (remaining > 0)
         {
-            sprintf(buf, "%d seconds of recording left", remaining);
+            // Display the optical flow vectors and the info message to left the observers
+            // know the system is currently recording 
+            sprintf(buf, "Remaining %d seconds of recording", remaining);
 
             Mat gray;
             cvtColor(nextFrame, gray, COLOR_BGR2GRAY);
-            cv::putText(gray,  buf, Point(10,80), 2, 0.5, Scalar(0,0,255), 2.5, cv::LINE_AA);
+            cv::putText(gray,  buf, Point(10,80), FONT_HERSHEY_PLAIN, 1.8, Scalar(0,0,255), 1.5, cv::LINE_AA);
 
             imshow("flow", gray);
          }
@@ -316,7 +319,10 @@ void MotionDetectedState::OnFrameCaptured(MotionDetector &motionDetector, const 
         {
             motionDetector.setState(&DelayMotionDetectionState::defaultInstance());
         }
-        waitKey(30);
+        if(waitKey(30)>=0)
+        {
+            motionDetector.setState(&EndOfMotionDetectionState::defaultInstance());
+        }
      }
 }
 void MotionDetectedState::OnLeaveCapture(MotionDetector &/*motion*/)
@@ -355,7 +361,7 @@ void DelayMotionDetectionState::OnFrameCaptured(MotionDetector &motionDetector, 
     int remaining = 5 - (current.tv_sec - m_start.tv_sec);
     if (remaining >= 0)
     {
-        sprintf(buf, "%d seconds remaining...", remaining);
+        sprintf(buf, "Motion detection is suspended for %d seconds", remaining);
 
         //Mat gray;
         //cvtColor(nextFrame, gray, COLOR_BGR2GRAY);
@@ -368,7 +374,10 @@ void DelayMotionDetectionState::OnFrameCaptured(MotionDetector &motionDetector, 
     {
         motionDetector.setState(&NoMotionDetectedState::defaultInstance());
     }
-    waitKey(30);
+    if(waitKey(30)>=0)
+    {
+        motionDetector.setState(&EndOfMotionDetectionState::defaultInstance());
+    }
 }
 void DelayMotionDetectionState::OnLeaveCapture(MotionDetector &/*motion*/)
 {
