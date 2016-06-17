@@ -7,7 +7,9 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <direct.h>
+#ifdef WIN32
+	#include <direct.h>
+#endif
 #include <string>
 #include <algorithm>
 #include <memory>
@@ -347,7 +349,10 @@ void MotionDetectedState::OnEnterCapture(MotionDetector &motion)
 
     std::string path = motion.getOutputDir();
     path += "\\";
-    path += ltoa(m_start.tv_sec, buf, 10);
+
+    sprintf(buf, "%ld", m_start.tv_sec);
+
+    path +=  buf;
     path += ".avi";
 
     printf("Motion is detected: Recording live video to \"%s\"...\n", path.c_str());
@@ -498,13 +503,23 @@ int main(int argc, char** argv)
     }
     if (stat(outputdir, &info) != 0)
     {
+#ifdef WIN32
 	if (_mkdir(outputdir) != 0)
 	{
+#else
+        if (mkdir(outputdir, S_IRUSR | S_IWUSR) != 0)
+        {
+#endif
 		cerr << "\"" << outputdir << "\" output directory does not exist and/or cannot be created." << std::endl;
 		help();
+		return -1;
 	}
     }
+#ifdef WIN32
     else if ((info.st_mode & _S_IFDIR) == 0) 
+#else
+    else if ((info.st_mode & S_IFDIR) == 0)
+#endif
     {
 	cerr << "\"" << outputdir << "\" is not a directory." << std::endl;
 	help();
