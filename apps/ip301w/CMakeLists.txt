@@ -13,6 +13,17 @@ ocv_target_include_modules_recurse(${the_target} ${OPENCV_IPW_DEPS})
 
 file(GLOB SRCS *.cpp)
 
+set(GCC_CLANG_COMPILE_FLAGS 
+#	"-std=c++11"
+	"-Wno-c++0x-compat"
+	"-std=gnu++0x -g"
+	"-o gcc.log"
+)
+
+add_definitions(
+	${GCC_CLANG_COMPILE_FLAGS}
+)
+
 set(ipw_files ${SRCS} ${HDRS})
 
 ocv_add_executable(${the_target} ${ipw_files})
