@@ -8,6 +8,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <direct.h>
+#include <string>
+#include <algorithm>
+#include <memory>
+#include <cassert>
 
 using namespace cv;
 using namespace std;
@@ -46,6 +50,68 @@ static double computeOptFlowMapMag(const Mat& flow, Mat& cflowmap, int step)
         }
     return (mag * step * step) / (cflowmap.rows * cflowmap.cols);
 }
+
+class FrameProvider
+{
+public:
+	FrameProvider() {}
+	virtual ~FrameProvider() {}
+	virtual FrameProvider& operator>>(Mat &buffer) = 0;
+	virtual int get(int propertyId) const = 0;
+};
+
+class VideoCaptureAdapter : public FrameProvider
+{
+public:
+	VideoCaptureAdapter(VideoCapture * cap) :
+		m_cap(cap)
+	{
+	}
+
+	virtual FrameProvider & operator>>(Mat &buffer)
+	{
+		*m_cap >> buffer;
+		return *this;
+	}
+
+	virtual int get(int propertyId) const
+	{
+		return m_cap->get(propertyId);
+	}
+private:
+	VideoCapture *m_cap;
+};
+
+// Reads individual images from URI
+class ImageGrabberFromURI : public FrameProvider
+{
+public:
+	ImageGrabberFromURI(const std::string &filename) :
+		m_fn(filename)
+	{
+	}
+
+	virtual FrameProvider & operator>>(Mat &buffer)
+	{
+		m_vc.reset(new VideoCapture());
+		if (m_vc->open(m_fn))
+		{
+			*m_vc >> buffer;
+		}
+		return *this;
+	}
+
+	virtual int get(int propertyId) const
+	{
+		assert(m_vc != nullptr);
+		if (m_vc != nullptr)
+			return m_vc->get(propertyId);
+		return 0;
+	}
+private:
+	std::string m_fn;
+	std::unique_ptr<VideoCapture> m_vc;
+};
 
 class  MotionDetector;
 
@@ -114,7 +180,7 @@ private:
 class MotionDetector
 {
 public:
-    MotionDetector(VideoCapture *cap, const char *outputdir) :
+    MotionDetector(FrameProvider *cap, const char *outputdir) :
         m_cap(cap),
         m_state(0),
         m_outputdir(outputdir)
@@ -148,7 +214,7 @@ public:
         setState(0);
     }
 
-    VideoCapture * getCap()
+    FrameProvider * getCap()
     {
         return m_cap;
     }
@@ -162,7 +228,7 @@ public:
         return m_outputdir;
     }
 private:
-    VideoCapture *m_cap;
+    FrameProvider *m_cap;
     MotionDetectorState * m_state;
     std::string m_outputdir;
 };
@@ -392,38 +458,59 @@ int main(int argc, char** argv)
 {
     int camid = 0;
     VideoCapture cap;
+    std::unique_ptr<FrameProvider> fp;
     const char *outputdir = "data";
     struct stat info;
-
+    bool is_camera = true;
+    std::string filename;
     if (argc > 1)
     {
-        camid = atoi(argv[1]);
+	filename = argv[1];
+	auto it = std::find_if(filename.begin(), filename.end(), [](char c) { return !std::isdigit(c);});
+	is_camera = it == filename.end();
+	if (is_camera)
+	{
+        	camid = atoi(argv[1]);
+	}
     }
     if (argc > 2)
     {
         outputdir = argv[2];
     }
-    if (!cap.open(camid))
+    if (is_camera)
     {
-        help();
-        return -1;
+    	fp.reset(new VideoCaptureAdapter(&cap));
+        if (!cap.open(camid))
+        {
+            help();
+            return -1;
+        }
     }
-
+    else
+    {
+	fp.reset(new ImageGrabberFromURI(filename));
+        if (!cap.open(filename))
+        {
+	    std::cerr << "\"" << filename << "\" cannot be opened." << std::endl;
+            help();
+            return -1;
+        }
+    }
     if (stat(outputdir, &info) != 0)
     {
 	if (_mkdir(outputdir) != 0)
 	{
-		printf("\"%s\" output directory does not exist and/or cannot be created.\n", outputdir);
+		cerr << "\"" << outputdir << "\" output directory does not exist and/or cannot be created." << std::endl;
 		help();
 	}
     }
     else if ((info.st_mode & _S_IFDIR) == 0) 
     {
-	printf("\"%s\" is not a directory.\n", outputdir);
+	cerr << "\"" << outputdir << "\" is not a directory." << std::endl;
 	help();
     }
 
-    MotionDetector detector(&cap, outputdir);
+    MotionDetector detector(fp.get(), outputdir);
     try
     {
         detector.run();
