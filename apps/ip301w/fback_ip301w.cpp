@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <ctime>
+#include <time.h>
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -14,6 +15,9 @@
 #include <algorithm>
 #include <memory>
 #include <cassert>
+#include <stdexcept>
+#include <future>
+#include <chrono>
 
 using namespace cv;
 using namespace std;
@@ -25,7 +29,12 @@ static void help()
             "Mainly the function: calcOpticalFlowFarneback()\n"
             "Call:\n"
             "./fback_ip301w\n"
-            "This reads from video camera 0\n" << endl;
+            "   This reads from video camera 0\n"
+            "./fback_ip301w http://192.168.1.30/goform/video2\n"
+            "   This reads images from the specified URI.\n"
+            "./fback_ip301w 0 0.1\n"
+            "   This read from camera 0 and configures motion detection threshold. The lower the threshold, the more sensitive the motion detection will be.\n"
+            << endl;
 }
 static void drawOptFlowMap(const Mat& flow, Mat& cflowmap, int step,
                     double, const Scalar& color)
@@ -95,11 +104,20 @@ public:
 
 	virtual FrameProvider & operator>>(Mat &buffer)
 	{
+		
 		m_vc.reset(new VideoCapture());
-		if (m_vc->open(m_fn))
+
+		auto handle = async(std::launch::async, [this] { return m_vc->open(m_fn); });
+
+		auto status = handle.wait_for(std::chrono::seconds(10));
+
+		if (status == future_status::ready && handle.get())
+		//if (m_vc->open(m_fn))
 		{
-			*m_vc >> buffer;
+			*m_vc >> m_prevBuffer;
 		}
+		buffer = m_prevBuffer;
+		
 		return *this;
 	}
 
@@ -113,6 +131,7 @@ public:
 private:
 	std::string m_fn;
 	std::unique_ptr<VideoCapture> m_vc;
+	Mat m_prevBuffer;
 };
 
 class  MotionDetector;
@@ -182,12 +201,73 @@ private:
 class MotionDetector
 {
 public:
-    MotionDetector(FrameProvider *cap, const char *outputdir) :
+
+    enum class ThresholdLevel : unsigned int
+    {
+	COLD      = 0,
+	LUKEWARM,
+	WARM,
+	HOTTER,
+	HOT,
+	VERYHOT,
+	MAGMA
+    };
+
+    MotionDetector(FrameProvider *cap, const char *outputdir, double threshold) :
         m_cap(cap),
         m_state(0),
-        m_outputdir(outputdir)
+        m_outputdir(outputdir),
+	m_threshold(threshold)
     {
+	assert(m_threshold != 0.0);
+	if (m_threshold == 0.0)
+		throw invalid_argument("Threshold must be greater than 0");
 
+    }
+
+    double getThreshold() const {
+	return m_threshold;
+    }
+
+    ThresholdLevel getThresholdLevel(double magnitude) const {
+
+	double dy = m_threshold / 6;
+	double t = dy;
+	auto level = ThresholdLevel::COLD;
+	if (magnitude <= t)
+		return level;
+
+	level = ThresholdLevel::LUKEWARM;
+	t += dy;
+
+	if (magnitude <= t)
+		return level;
+
+	level = ThresholdLevel::WARM;
+	t += dy;
+
+	if (magnitude <= t)
+		return level;
+
+	level = ThresholdLevel::HOTTER;
+	t += dy;
+
+	if (magnitude <= t)
+		return level;
+
+	level = ThresholdLevel::HOT;
+	t += dy;
+
+	if (magnitude <= t)
+		return level;
+
+	level = ThresholdLevel::VERYHOT;
+	t += dy;
+
+	if (magnitude <= t)
+		return level;
+
+	return ThresholdLevel::MAGMA;
     }
 
     void setState(MotionDetectorState *newState)
@@ -229,10 +309,13 @@ public:
     {
         return m_outputdir;
     }
+
+    
 private:
     FrameProvider *m_cap;
     MotionDetectorState * m_state;
     std::string m_outputdir;
+    double m_threshold;
 };
 
 //
@@ -289,12 +372,27 @@ void NoMotionDetectedState::OnFrameCaptured(MotionDetector &motionDetector, cons
         //    rng.uniform(0,100)*0.05+0.1, randomColor(rng), rng.uniform(1, 10), lineType);
 
         Scalar color;
+
+	auto level = motionDetector.getThresholdLevel(mag);
+
+	switch(level)
+	{
+		case MotionDetector::ThresholdLevel::COLD: color = Scalar(128, 0, 0); break;
+		case MotionDetector::ThresholdLevel::LUKEWARM: color = Scalar(255, 0, 0); break;
+		case MotionDetector::ThresholdLevel::WARM: color = Scalar(0, 128, 0); break;
+		case MotionDetector::ThresholdLevel::HOTTER: color = Scalar(0, 0, 64); break;
+		case MotionDetector::ThresholdLevel::HOT: color = Scalar(0, 0, 128); break;
+		case MotionDetector::ThresholdLevel::VERYHOT: color = Scalar(0, 0, 255); break;
+		case MotionDetector::ThresholdLevel::MAGMA: color = Scalar(255, 0, 255); break;
+	}
+/*
         if (mag > 0.8)
             color = Scalar(0,0,255);
         else if (mag > 0.5)
             color = Scalar(0, 255, 0);
         else
             color = Scalar(255, 0, 0);
+*/
         cv::putText(cflow, buf, Point(10,80), 2, 2.5, color, 2.5, cv::LINE_AA);
 
         imshow("flow", cflow);
@@ -305,7 +403,7 @@ void NoMotionDetectedState::OnFrameCaptured(MotionDetector &motionDetector, cons
     {
         motionDetector.setState(&EndOfMotionDetectionState::defaultInstance());
     }
-    else if (mag > 1.8)
+    else if (mag > motionDetector.getThreshold())
     {
         motionDetector.setState(&MotionDetectedState::defaultInstance());
     }
@@ -348,9 +446,20 @@ void MotionDetectedState::OnEnterCapture(MotionDetector &motion)
     int ex = static_cast<int>(VideoWriter::fourcc('X','V','I','D'));
 
     std::string path = motion.getOutputDir();
+#ifdef WIN32
     path += "\\";
+#else
+    path += "/";
+#endif
 
-    sprintf(buf, "%ld", m_start.tv_sec);
+    time_t timer;
+    struct tm* tm_info;
+
+    time(&timer);
+    tm_info = localtime(&timer);
+
+    strftime(buf, sizeof(buf), "%Y:%m:%d %H:%M:%S", tm_info);
+    //sprintf(buf, "%ld", m_start.tv_sec);
 
     path +=  buf;
     path += ".avi";
@@ -468,6 +577,8 @@ int main(int argc, char** argv)
     struct stat info;
     bool is_camera = true;
     std::string filename;
+
+    double threshold = 1.8;
     if (argc > 1)
     {
 	filename = argv[1];
@@ -481,6 +592,11 @@ int main(int argc, char** argv)
     if (argc > 2)
     {
         outputdir = argv[2];
+    }
+
+    if (argc > 3)
+    {
+	threshold = std::stod(argv[3]);
     }
     if (is_camera)
     {
@@ -525,7 +641,7 @@ int main(int argc, char** argv)
 	help();
     }
 
-    MotionDetector detector(fp.get(), outputdir);
+    MotionDetector detector(fp.get(), outputdir, threshold);
     try
     {
         detector.run();
