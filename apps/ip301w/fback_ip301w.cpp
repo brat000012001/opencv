@@ -36,31 +36,6 @@ static void help()
             "   This read from camera 0 and configures motion detection threshold. The lower the threshold, the more sensitive the motion detection will be.\n"
             << endl;
 }
-static void drawOptFlowMap(const Mat& flow, Mat& cflowmap, int step,
-                    double, const Scalar& color)
-{
-    for(int y = 0; y < cflowmap.rows; y += step)
-        for(int x = 0; x < cflowmap.cols; x += step)
-        {
-            const Point2f& fxy = flow.at<Point2f>(y, x);
-            line(cflowmap, Point(x,y), Point(cvRound(x+fxy.x), cvRound(y+fxy.y)),
-                 color);
-            circle(cflowmap, Point(x,y), 2, color, -1);
-        }
-}
-
-static double computeOptFlowMapMag(const Mat& flow, Mat& cflowmap, int step)
-{
-    double mag = 0.0;
-    for(int y = 0; y < cflowmap.rows; y += step)
-        for(int x = 0; x < cflowmap.cols; x += step)
-        {
-            const Point2f& fxy = flow.at<Point2f>(y, x);
-
-            mag += sqrt(fxy.dot(fxy));
-        }
-    return (mag * step * step) / (cflowmap.rows * cflowmap.cols);
-}
 
 class FrameProvider
 {
@@ -225,11 +200,13 @@ public:
 
     }
 
-    double getThreshold() const {
+    double getThreshold() const 
+    {
 	return m_threshold;
     }
 
-    ThresholdLevel getThresholdLevel(double magnitude) const {
+    ThresholdLevel getThresholdLevel(double magnitude) const 
+    {
 
 	double dy = m_threshold / 6;
 	double t = dy;
@@ -270,6 +247,25 @@ public:
 	return ThresholdLevel::MAGMA;
     }
 
+    Scalar TranslateThresholdLevel2Color(ThresholdLevel level) const
+    {
+        Scalar color;
+	switch(level)
+	{
+		case MotionDetector::ThresholdLevel::LUKEWARM: color = Scalar(255, 0, 0); break;
+		case MotionDetector::ThresholdLevel::WARM: color = Scalar(0, 128, 0); break;
+		case MotionDetector::ThresholdLevel::HOTTER: color = Scalar(0, 0, 64); break;
+		case MotionDetector::ThresholdLevel::HOT: color = Scalar(0, 0, 128); break;
+		case MotionDetector::ThresholdLevel::VERYHOT: color = Scalar(0, 0, 255); break;
+		case MotionDetector::ThresholdLevel::MAGMA: color = Scalar(255, 0, 255); break;
+
+		default:
+		case MotionDetector::ThresholdLevel::COLD: 
+			color = Scalar(128, 0, 0); 
+			break;
+	}
+	return color;
+    }
     void setState(MotionDetectorState *newState)
     {
         if (m_state)
@@ -309,6 +305,35 @@ public:
     {
         return m_outputdir;
     }
+
+    void DrawOptFlowMap(const Mat& flow, Mat& cflowmap, int step, double radius) const
+    {
+	for(int y = 0; y < cflowmap.rows; y += step)
+		for(int x = 0; x < cflowmap.cols; x += step)
+		{
+			const Point2f& fxy = flow.at<Point2f>(y, x);
+
+			auto mag = sqrt(fxy.dot(fxy));
+			auto level = getThresholdLevel(mag);
+			auto color = TranslateThresholdLevel2Color(level);
+
+			line(cflowmap, Point(x,y), Point(cvRound(x+fxy.x), cvRound(y+fxy.y)), color);
+			circle(cflowmap, Point(x,y), radius, color, -1);
+		}
+    }
+
+   double ComputeOptFlowMapMag(const Mat& flow, Mat& cflowmap, int step) const
+   {
+	double mag = 0.0;
+	for(int y = 0; y < cflowmap.rows; y += step)
+		for(int x = 0; x < cflowmap.cols; x += step)
+		{
+			const Point2f& fxy = flow.at<Point2f>(y, x);
+
+			mag += sqrt(fxy.dot(fxy));
+		}
+	return (mag * step * step) / (cflowmap.rows * cflowmap.cols);
+   }
 
     
 private:
@@ -361,9 +386,12 @@ void NoMotionDetectedState::OnFrameCaptured(MotionDetector &motionDetector, cons
     if( m_prevgray.data )
     {
         calcOpticalFlowFarneback(m_prevgray, gray, flow, 0.5, 3, 15, 3, 5, 1.2, 0);
+
         cvtColor(m_prevgray, cflow, COLOR_GRAY2BGR);
-        drawOptFlowMap(flow, cflow, 16, 1.5, Scalar(0, 255, 0));
-        mag = computeOptFlowMapMag(flow, cflow, 2);
+
+        motionDetector.DrawOptFlowMap(flow, cflow, 16, 1.5);
+
+        mag = motionDetector.ComputeOptFlowMapMag(flow, cflow, 1);
 
         char buf[255];
         sprintf(buf, "Mag: %f", mag);
@@ -385,15 +413,8 @@ void NoMotionDetectedState::OnFrameCaptured(MotionDetector &motionDetector, cons
 		case MotionDetector::ThresholdLevel::VERYHOT: color = Scalar(0, 0, 255); break;
 		case MotionDetector::ThresholdLevel::MAGMA: color = Scalar(255, 0, 255); break;
 	}
-/*
-        if (mag > 0.8)
-            color = Scalar(0,0,255);
-        else if (mag > 0.5)
-            color = Scalar(0, 255, 0);
-        else
-            color = Scalar(255, 0, 0);
-*/
-        cv::putText(cflow, buf, Point(10,80), 2, 2.5, color, 2.5, cv::LINE_AA);
+        cv::putText(cflow,  buf, Point(10,80), FONT_HERSHEY_PLAIN, 1.8, color, 1.5, cv::LINE_AA);
+        //cv::putText(cflow, buf, Point(10,80), 2, 2.5, color, 2.5, cv::LINE_AA);
 
         imshow("flow", cflow);
 
