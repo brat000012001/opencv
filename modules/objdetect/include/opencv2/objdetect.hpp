@@ -41,8 +41,8 @@
 //
 //M*/
 
-#ifndef __OPENCV_OBJDETECT_HPP__
-#define __OPENCV_OBJDETECT_HPP__
+#ifndef OPENCV_OBJDETECT_HPP
+#define OPENCV_OBJDETECT_HPP
 
 #include "opencv2/core.hpp"
 
@@ -91,7 +91,7 @@ compensate for the differences in the size of areas. The sums of pixel values ov
 regions are calculated rapidly using integral images (see below and the integral description).
 
 To see the object detector at work, have a look at the facedetect demo:
-<https://github.com/Itseez/opencv/tree/master/samples/cpp/dbt_face_detection.cpp>
+<https://github.com/opencv/opencv/tree/master/samples/cpp/dbt_face_detection.cpp>
 
 The following reference is for the detection part only. There is a separate application called
 opencv_traincascade that can train a cascade of boosted classifiers from a set of samples.
@@ -124,7 +124,7 @@ public:
     SimilarRects(double _eps) : eps(_eps) {}
     inline bool operator()(const Rect& r1, const Rect& r2) const
     {
-        double delta = eps*(std::min(r1.width, r2.width) + std::min(r1.height, r2.height))*0.5;
+        double delta = eps * ((std::min)(r1.width, r2.width) + (std::min)(r1.height, r2.height)) * 0.5;
         return std::abs(r1.x - r2.x) <= delta &&
             std::abs(r1.y - r2.y) <= delta &&
             std::abs(r1.x + r1.width - r2.x - r2.width) <= delta &&
