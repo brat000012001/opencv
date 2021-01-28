@@ -28,5 +28,6 @@ xcuserdata/
 *.cmake
 *.tmp
 CMakeCache.txt
+*.cmake
 *.a
 Makefile
